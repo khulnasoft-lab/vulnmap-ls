@@ -959,7 +959,7 @@ func Test_CodeActionResolve_ShouldExecuteCommands(t *testing.T) {
 func Test_SmokeWorkspaceScanOssAndCode(t *testing.T) {
 	ossFile := "package.json"
 	codeFile := "app.js"
-	runSmokeTest("https://github.com/khulnasoft-lab-labs/nodejs-goof", "0336589", ossFile, codeFile, t)
+	runSmokeTest("https://github.com/khulnasoft-lab/vulnmap-goof", "0336589", ossFile, codeFile, t)
 }
 
 func Test_SmokeWorkspaceScanIacAndCode(t *testing.T) {
@@ -1067,7 +1067,7 @@ func Test_IntegrationHoverResults(t *testing.T) {
 	fakeAuthenticationProvider := di.AuthenticationService().Provider().(*vulnmap.FakeAuthenticationProvider)
 	fakeAuthenticationProvider.IsAuthenticated = true
 
-	var cloneTargetDir, err = setupCustomTestRepo("https://github.com/khulnasoft-lab-labs/nodejs-goof", "0336589", t)
+	var cloneTargetDir, err = setupCustomTestRepo("https://github.com/khulnasoft-lab/vulnmap-goof", "0336589", t)
 	defer func(path string) { _ = os.RemoveAll(path) }(cloneTargetDir)
 	if err != nil {
 		t.Fatal(err, "Couldn't setup test repo")
@@ -1132,7 +1132,7 @@ func Test_SmokeVulnmapCodeFileScan(t *testing.T) {
 	di.Init()
 	_, _ = loc.Client.Call(ctx, "initialize", nil)
 
-	var cloneTargetDir, err = setupCustomTestRepo("https://github.com/khulnasoft-lab-labs/nodejs-goof", "0336589", t)
+	var cloneTargetDir, err = setupCustomTestRepo("https://github.com/khulnasoft-lab/vulnmap-goof", "0336589", t)
 	defer func(path string) { _ = os.RemoveAll(path) }(cloneTargetDir)
 	if err != nil {
 		t.Fatal(err, "Couldn't setup test repo")
