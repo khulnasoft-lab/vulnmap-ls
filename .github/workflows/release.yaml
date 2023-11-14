@@ -75,7 +75,7 @@ jobs:
           make tools lint
 
       - name: Set up Vulnmap CLI # Tests need it
-        uses: khulnasoft-lab/actions/setup@master
+        uses: khulnasoft-lab/vulnmap-actions/setup@master
 
       - name: Run tests
         env:
