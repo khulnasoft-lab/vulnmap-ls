@@ -1,0 +1,150 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package vulnmap_api
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/application/config"
+)
+
+type VulnmapApiClientImpl struct {
+	httpClientFunc func() *http.Client
+}
+
+type LocalCodeEngine struct {
+	AllowCloudUpload bool   `json:"allowCloudUpload"`
+	Url              string `json:"url"`
+	Enabled          bool   `json:"enabled"`
+}
+
+type SastResponse struct {
+	SastEnabled                 bool            `json:"sastEnabled"`
+	LocalCodeEngine             LocalCodeEngine `json:"localCodeEngine"`
+	Org                         string          `json:"org"`
+	SupportedLanguages          []string        `json:"supportedLanguages"`
+	ReportFalsePositivesEnabled bool            `json:"reportFalsePositivesEnabled"`
+	AutofixEnabled              bool            `json:"autofixEnabled"`
+}
+
+type VulnmapApiClient interface {
+	SastSettings() (SastResponse, error)
+}
+
+type VulnmapApiError struct {
+	msg        string
+	statusCode int
+}
+
+func NewVulnmapApiError(msg string, statusCode int) *VulnmapApiError {
+	return &VulnmapApiError{msg, statusCode}
+}
+
+func (e *VulnmapApiError) Error() string {
+	return e.msg
+}
+
+func (e *VulnmapApiError) StatusCode() int {
+	return e.statusCode
+}
+
+func NewVulnmapApiClient(client func() *http.Client) VulnmapApiClient {
+	s := VulnmapApiClientImpl{
+		httpClientFunc: client,
+	}
+	return &s
+}
+
+func (s *VulnmapApiClientImpl) SastSettings() (SastResponse, error) {
+	method := "SastSettings"
+	log.Debug().Str("method", method).Msg("API: Getting SastEnabled")
+	path := "/cli-config/settings/sast"
+	organization := config.CurrentConfig().Organization()
+	if organization != "" {
+		path += "?org=" + url.QueryEscape(organization)
+	}
+	responseBody, err := s.doCall("GET", path, nil)
+	if err != nil {
+		fmtErr := fmt.Errorf("%v: %v", err, responseBody)
+		log.Err(fmtErr).Str("method", method).Msg("error when calling sastEnabled endpoint")
+		return SastResponse{}, err
+	}
+
+	var response SastResponse
+	unmarshalErr := json.Unmarshal(responseBody, &response)
+	if unmarshalErr != nil {
+		fmtErr := fmt.Errorf("%v: %v", err, responseBody)
+		log.Err(fmtErr).Str("method", method).Msg("couldn't unmarshal SastResponse")
+		return SastResponse{}, err
+	}
+	log.Debug().Str("method", method).Msg("API: Done")
+	return response, nil
+}
+
+func (s *VulnmapApiClientImpl) doCall(method string,
+	path string,
+	requestBody []byte,
+) ([]byte, error) {
+	host := config.CurrentConfig().VulnmapApi()
+	b := bytes.NewBuffer(requestBody)
+	req, requestErr := http.NewRequest(method, host+path, b)
+	if requestErr != nil {
+		return nil, NewVulnmapApiError(requestErr.Error(), 0)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-vulnmap-ide", "vulnmap-ls-"+config.Version)
+
+	log.Trace().Str("requestBody", string(requestBody)).Msg("SEND TO REMOTE")
+	response, err := s.httpClientFunc().Do(req)
+	if err != nil {
+		return nil, NewVulnmapApiError(err.Error(), 0)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Err(err).Msg("Couldn't close response body in call to Vulnmap API")
+		}
+	}(response.Body)
+
+	apiError := checkResponseCode(response)
+	if apiError != nil {
+		return nil, apiError
+	}
+
+	responseBody, readErr := io.ReadAll(response.Body)
+	log.Trace().Str("response.Status", response.Status).Str("responseBody",
+		string(responseBody)).Msg("RECEIVED FROM REMOTE")
+	if readErr != nil {
+		return nil, NewVulnmapApiError(err.Error(), 0)
+	}
+	return responseBody, nil
+}
+
+func checkResponseCode(r *http.Response) *VulnmapApiError {
+	if r.StatusCode >= 200 && r.StatusCode <= 399 {
+		return nil
+	}
+
+	return NewVulnmapApiError("Unexpected response code: "+r.Status, r.StatusCode)
+}

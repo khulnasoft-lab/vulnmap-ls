@@ -1,0 +1,882 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/infrastructure/cli/cli_constants"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/logging"
+
+	"github.com/adrg/xdg"
+	"github.com/denisbrodbeck/machineid"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/subosito/gotenv"
+	"github.com/xtgo/uuid"
+	"golang.org/x/oauth2"
+
+	"github.com/khulnasoft-lab/go-application-framework/pkg/app"
+	"github.com/khulnasoft-lab/go-application-framework/pkg/auth"
+	"github.com/khulnasoft-lab/go-application-framework/pkg/configuration"
+	localworkflows "github.com/khulnasoft-lab/go-application-framework/pkg/local_workflows"
+	"github.com/khulnasoft-lab/go-application-framework/pkg/workflow"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/infrastructure/cli/filename"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/concurrency"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/lsp"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/product"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/util"
+)
+
+const (
+	deeproxyApiUrlKey     = "DEEPROXY_API_URL"
+	FormatHtml            = "html"
+	FormatMd              = "md"
+	vulnmapCodeTimeoutKey    = "VULNMAP_CODE_TIMEOUT" // timeout as duration (number + unit), e.g. 10m
+	DefaultVulnmapApiUrl     = "https://vulnmap.khulnasoft.com/api"
+	DefaultDeeproxyApiUrl = "https://deeproxy.vulnmap.khulnasoft.com"
+	pathListSeparator     = string(os.PathListSeparator)
+	windows               = "windows"
+)
+
+var (
+	Version            = "SNAPSHOT"
+	LsProtocolVersion  = "development"
+	Development        = "true"
+	currentConfig      *Config
+	mutex              = &sync.Mutex{}
+	LicenseInformation = "License information\n FILLED DURING BUILD"
+)
+
+type CliSettings struct {
+	Insecure                bool
+	AdditionalOssParameters []string
+	cliPath                 string
+	cliPathAccessMutex      sync.Mutex
+}
+
+func NewCliSettings() *CliSettings {
+	settings := &CliSettings{}
+	settings.SetPath("")
+	return settings
+}
+
+func (c *CliSettings) Installed() bool {
+	c.cliPathAccessMutex.Lock()
+	defer c.cliPathAccessMutex.Unlock()
+	stat, err := os.Stat(c.cliPath)
+	if err == nil {
+		log.Debug().Str("method", "config.cliSettings.Installed").Msgf("CLI path: %s, Size: %d, Perm: %s",
+			c.cliPath,
+			stat.Size(),
+			stat.Mode().Perm())
+	}
+	isDirectory := stat != nil && stat.IsDir()
+	if isDirectory {
+		log.Warn().Msgf("CLI path (%s) refers to a directory and not a file", c.cliPath)
+	}
+	return c.cliPath != "" && err == nil && !isDirectory
+}
+
+func (c *CliSettings) IsPathDefined() bool {
+	c.cliPathAccessMutex.Lock()
+	defer c.cliPathAccessMutex.Unlock()
+	return c.cliPath != ""
+}
+
+// Path returns the full path to the CLI executable that is stored in the CLI configuration
+func (c *CliSettings) Path() string {
+	c.cliPathAccessMutex.Lock()
+	defer c.cliPathAccessMutex.Unlock()
+	return filepath.Clean(c.cliPath)
+}
+
+func (c *CliSettings) SetPath(path string) {
+	c.cliPathAccessMutex.Lock()
+	defer c.cliPathAccessMutex.Unlock()
+	if path == "" {
+		path = filepath.Join(c.DefaultBinaryInstallPath(), filename.ExecutableName)
+	}
+	c.cliPath = path
+}
+
+func (c *CliSettings) DefaultBinaryInstallPath() string {
+	lsPath := filepath.Join(xdg.DataHome, "vulnmap-ls")
+	err := os.MkdirAll(lsPath, 0755)
+	if err != nil {
+		log.Err(err).Str("method", "lsPath").Msgf("couldn't create %s", lsPath)
+		return ""
+	}
+	return lsPath
+}
+
+type Config struct {
+	scrubDict                    map[string]bool
+	configLoaded                 concurrency.AtomicBool
+	cliSettings                  *CliSettings
+	configFile                   string
+	format                       string
+	isErrorReportingEnabled      concurrency.AtomicBool
+	isVulnmapCodeEnabled            concurrency.AtomicBool
+	isVulnmapOssEnabled             concurrency.AtomicBool
+	isVulnmapIacEnabled             concurrency.AtomicBool
+	isVulnmapContainerEnabled       concurrency.AtomicBool
+	isVulnmapAdvisorEnabled         concurrency.AtomicBool
+	isTelemetryEnabled           concurrency.AtomicBool
+	manageBinariesAutomatically  concurrency.AtomicBool
+	logPath                      string
+	logFile                      *os.File
+	vulnmapCodeAnalysisTimeout      time.Duration
+	vulnmapApiUrl                   string
+	vulnmapCodeApiUrl               string
+	token                        string
+	deviceId                     string
+	clientCapabilities           lsp.ClientCapabilities
+	path                         string
+	defaultDirs                  []string
+	automaticAuthentication      bool
+	tokenChangeChannels          []chan string
+	filterSeverity               lsp.SeverityFilter
+	trustedFolders               []string
+	trustedFoldersFeatureEnabled bool
+	activateVulnmapCodeSecurity     bool
+	activateVulnmapCodeQuality      bool
+	osPlatform                   string
+	osArch                       string
+	runtimeName                  string
+	runtimeVersion               string
+	automaticScanning            bool
+	authenticationMethod         lsp.AuthenticationMethod
+	engine                       workflow.Engine
+	enableVulnmapLearnCodeActions   bool
+	logger                       *zerolog.Logger
+	storage                      StorageWithCallbacks
+	m                            sync.Mutex
+	analyticsEnabled             bool
+}
+
+func CurrentConfig() *Config {
+	mutex.Lock()
+	defer mutex.Unlock()
+	if currentConfig == nil {
+		currentConfig = New()
+	}
+	return currentConfig
+}
+
+func SetCurrentConfig(config *Config) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	currentConfig = config
+}
+
+func IsDevelopment() bool {
+	parseBool, _ := strconv.ParseBool(Development)
+	return parseBool
+}
+
+// New creates a configuration object with default values
+func New() *Config {
+	c := &Config{}
+	c.scrubDict = make(map[string]bool)
+	c.logger = &log.Logger
+	c.cliSettings = NewCliSettings()
+	c.automaticAuthentication = true
+	c.configFile = ""
+	c.format = "md"
+	c.isErrorReportingEnabled.Set(true)
+	c.isVulnmapOssEnabled.Set(true)
+	c.isVulnmapIacEnabled.Set(true)
+	c.manageBinariesAutomatically.Set(true)
+	c.logPath = ""
+	c.vulnmapCodeAnalysisTimeout = vulnmapCodeAnalysisTimeoutFromEnv()
+	c.token = ""
+	c.trustedFoldersFeatureEnabled = true
+	c.automaticScanning = true
+	c.authenticationMethod = lsp.TokenAuthentication
+	c.deviceId = c.determineDeviceId()
+	c.addDefaults()
+	c.filterSeverity = lsp.DefaultSeverityFilter()
+	initWorkFlowEngine(c)
+	err := c.engine.Init()
+	if err != nil {
+		log.Warn().Err(err).Msg("unable to initialize workflow engine")
+	}
+	c.UpdateApiEndpoints(DefaultVulnmapApiUrl)
+	c.enableVulnmapLearnCodeActions = true
+	c.SetTelemetryEnabled(true)
+
+	c.clientSettingsFromEnv()
+	return c
+}
+
+func initWorkFlowEngine(c *Config) {
+	conf := configuration.NewInMemory()
+	c.engine = app.CreateAppEngineWithOptions(app.WithConfiguration(conf))
+	c.storage = NewStorage()
+	conf.SetStorage(c.storage)
+	conf.Set(configuration.FF_OAUTH_AUTH_FLOW_ENABLED, true)
+	conf.Set(cli_constants.EXECUTION_MODE_KEY, cli_constants.EXECUTION_MODE_VALUE_STANDALONE)
+	err := localworkflows.InitWhoAmIWorkflow(c.engine)
+	if err != nil {
+		log.Err(err).Msg("unable to initialize WhoAmI workflow")
+	}
+}
+
+func (c *Config) AddBinaryLocationsToPath(searchDirectories []string) {
+	c.defaultDirs = searchDirectories
+	c.determineJavaHome()
+	c.determineMavenHome()
+}
+
+func (c *Config) determineDeviceId() string {
+	id, machineErr := machineid.ProtectedID("Vulnmap-LS")
+	if machineErr != nil {
+		log.Err(machineErr).Str("method", "config.New").Msg("cannot retrieve machine id")
+		if c.token != "" {
+			return util.Hash([]byte(c.token))
+		} else {
+			return uuid.NewTime().String()
+		}
+	} else {
+		return id
+	}
+}
+
+func (c *Config) IsTrustedFolderFeatureEnabled() bool {
+	return c.trustedFoldersFeatureEnabled
+}
+
+func (c *Config) SetTrustedFolderFeatureEnabled(enabled bool) {
+	c.trustedFoldersFeatureEnabled = enabled
+}
+
+func (c *Config) Load() {
+	files := c.configFiles()
+	for _, fileName := range files {
+		c.loadFile(fileName)
+	}
+
+	c.configLoaded.Set(true)
+}
+
+func (c *Config) loadFile(fileName string) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Info().Str("method", "loadFile").Msg("Couldn't load " + fileName)
+		return
+	}
+	defer func(file *os.File) { _ = file.Close() }(file)
+	env := gotenv.Parse(file)
+	for k, v := range env {
+		_, exists := os.LookupEnv(k)
+		if !exists {
+			err := os.Setenv(k, v)
+			if err != nil {
+				log.Warn().Str("method", "loadFile").Msg("Couldn't set environment variable " + k)
+			}
+		} else {
+			// add to path, don't ignore additional paths
+			if k == "PATH" {
+				c.updatePath(v)
+			}
+		}
+	}
+	c.updatePath(".")
+	log.Debug().Str("fileName", fileName).Msg("loaded.")
+}
+
+func (c *Config) NonEmptyToken() bool {
+	return c.Token() != ""
+}
+func (c *Config) CliSettings() *CliSettings {
+	return c.cliSettings
+}
+
+func (c *Config) Format() string {
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.format
+}
+func (c *Config) CLIDownloadLockFileName() string {
+	return filepath.Join(c.cliSettings.DefaultBinaryInstallPath(), "vulnmap-cli-download.lock")
+}
+func (c *Config) IsErrorReportingEnabled() bool { return c.isErrorReportingEnabled.Get() }
+func (c *Config) IsVulnmapOssEnabled() bool        { return c.isVulnmapOssEnabled.Get() }
+func (c *Config) IsVulnmapCodeEnabled() bool       { return c.isVulnmapCodeEnabled.Get() }
+func (c *Config) IsVulnmapIacEnabled() bool        { return c.isVulnmapIacEnabled.Get() }
+func (c *Config) IsVulnmapContainerEnabled() bool  { return c.isVulnmapContainerEnabled.Get() }
+func (c *Config) IsVulnmapAdvisorEnabled() bool    { return c.isVulnmapAdvisorEnabled.Get() }
+func (c *Config) LogPath() string {
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.logPath
+}
+func (c *Config) VulnmapApi() string                        { return c.vulnmapApiUrl }
+func (c *Config) VulnmapCodeApi() string                    { return c.vulnmapCodeApiUrl }
+func (c *Config) VulnmapCodeAnalysisTimeout() time.Duration { return c.vulnmapCodeAnalysisTimeout }
+func (c *Config) IntegrationName() string {
+	return c.Engine().GetConfiguration().GetString(configuration.INTEGRATION_NAME)
+}
+func (c *Config) IntegrationVersion() string {
+	return c.Engine().GetConfiguration().GetString(configuration.INTEGRATION_VERSION)
+}
+func (c *Config) FilterSeverity() lsp.SeverityFilter { return c.filterSeverity }
+func (c *Config) Token() string {
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.token
+}
+
+// TokenChangesChannel returns a channel that will be written into once the token has changed.
+// This allows aborting operations when the token is changed.
+func (c *Config) TokenChangesChannel() <-chan string {
+	c.m.Lock()
+	defer c.m.Unlock()
+	channel := make(chan string, 1)
+	c.tokenChangeChannels = append(c.tokenChangeChannels, channel)
+	return channel
+}
+
+func (c *Config) SetCliSettings(settings *CliSettings) {
+	c.cliSettings = settings
+}
+
+func (c *Config) UpdateApiEndpoints(vulnmapApiUrl string) bool {
+	if vulnmapApiUrl == "" {
+		vulnmapApiUrl = DefaultVulnmapApiUrl
+	}
+
+	if vulnmapApiUrl != c.vulnmapApiUrl {
+		c.vulnmapApiUrl = vulnmapApiUrl
+
+		// Update Code API endpoint
+		vulnmapCodeApiUrl, err := getCodeApiUrlFromCustomEndpoint(vulnmapApiUrl)
+		if err != nil {
+			log.Error().Err(err).Msg("Couldn't obtain Vulnmap Code API url from CLI endpoint.")
+		}
+
+		c.SetVulnmapCodeApi(vulnmapCodeApiUrl)
+		c.Engine().GetConfiguration().Set(configuration.API_URL, c.VulnmapApi())
+		return true
+	}
+	return false
+}
+
+func (c *Config) SetVulnmapCodeApi(vulnmapCodeApiUrl string) {
+	if vulnmapCodeApiUrl == "" {
+		c.vulnmapCodeApiUrl = DefaultDeeproxyApiUrl
+		return
+	}
+	c.vulnmapCodeApiUrl = vulnmapCodeApiUrl
+
+	config := c.engine.GetConfiguration()
+	additionalURLs := config.GetStringSlice(configuration.AUTHENTICATION_ADDITIONAL_URLS)
+	additionalURLs = append(additionalURLs, c.vulnmapCodeApiUrl)
+	config.Set(configuration.AUTHENTICATION_ADDITIONAL_URLS, additionalURLs)
+}
+
+func (c *Config) SetErrorReportingEnabled(enabled bool) { c.isErrorReportingEnabled.Set(enabled) }
+func (c *Config) SetVulnmapOssEnabled(enabled bool)        { c.isVulnmapOssEnabled.Set(enabled) }
+func (c *Config) SetVulnmapCodeEnabled(enabled bool) {
+	c.isVulnmapCodeEnabled.Set(enabled)
+	// the general setting overrules the specific one and should be slowly discontinued
+	c.EnableVulnmapCodeQuality(enabled)
+	c.EnableVulnmapCodeSecurity(enabled)
+}
+func (c *Config) SetVulnmapIacEnabled(enabled bool) { c.isVulnmapIacEnabled.Set(enabled) }
+
+func (c *Config) SetVulnmapContainerEnabled(enabled bool) { c.isVulnmapContainerEnabled.Set(enabled) }
+
+func (c *Config) SetVulnmapAdvisorEnabled(enabled bool) { c.isVulnmapAdvisorEnabled.Set(enabled) }
+
+func (c *Config) SetSeverityFilter(severityFilter lsp.SeverityFilter) bool {
+	emptySeverityFilter := lsp.SeverityFilter{}
+	if severityFilter == emptySeverityFilter {
+		return false
+	}
+
+	filterModified := c.filterSeverity != severityFilter
+	log.Debug().Str("method", "SetSeverityFilter").Interface("severityFilter", severityFilter).Msg("Setting severity filter:")
+	c.filterSeverity = severityFilter
+	return filterModified
+}
+
+func (c *Config) SetToken(token string) {
+	c.m.Lock()
+
+	oldToken := c.token
+	// always update the token and auth method in the engine
+	c.token = token
+	c.m.Unlock()
+
+	_, err := c.TokenAsOAuthToken()
+	isOauthToken := err == nil
+	conf := c.engine.GetConfiguration()
+	if !isOauthToken && conf.GetString(configuration.AUTHENTICATION_TOKEN) != token {
+		log.Info().Msg("Token is not an OAuth token, setting token authentication in GAF")
+		conf.Set(configuration.AUTHENTICATION_TOKEN, token)
+	}
+
+	if isOauthToken && conf.GetString(auth.CONFIG_KEY_OAUTH_TOKEN) != token {
+		log.Info().Err(err).Msg("setting oauth authentication in GAF")
+		conf.Set(auth.CONFIG_KEY_OAUTH_TOKEN, token)
+	}
+
+	// return if the token hasn't changed
+	if oldToken == token {
+		return
+	}
+
+	// Notify that the token has changed
+	c.m.Lock()
+	if token != "" {
+		c.scrubDict[token] = true
+	}
+	for _, channel := range c.tokenChangeChannels {
+		select {
+		case channel <- token:
+		default:
+			// Using select and a default case avoids deadlock when the channel is full
+			log.Warn().Msg("Cannot send cancellation token to channel - channel is full")
+		}
+	}
+	c.tokenChangeChannels = []chan string{}
+	c.m.Unlock()
+}
+
+func (c *Config) SetFormat(format string) {
+	c.m.Lock()
+	defer c.m.Unlock()
+	c.format = format
+}
+
+func (c *Config) SetLogPath(logPath string) {
+	c.m.Lock()
+	defer c.m.Unlock()
+	c.logPath = logPath
+}
+
+func (c *Config) ConfigureLogging(server lsp.Server) {
+	var logLevel zerolog.Level
+	var err error
+
+	logLevel, err = zerolog.ParseLevel(c.LogLevel())
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "Can't set log level from flag. Setting to default (=info)")
+		logLevel = zerolog.InfoLevel
+	}
+
+	// env var overrides flag
+	envLogLevel := os.Getenv("VULNMAP_LOG_LEVEL")
+	if envLogLevel != "" {
+		msg := fmt.Sprint("Setting log level from environment variable (VULNMAP_LOG_LEVEL) \"", envLogLevel, "\"")
+		_, _ = fmt.Fprintln(os.Stderr, msg)
+		envLevel, err := zerolog.ParseLevel(envLogLevel)
+		if err == nil {
+			_, _ = fmt.Fprintln(os.Stderr, "Can't set log level from flag. Setting to default (=info)")
+			logLevel = envLevel
+		}
+	}
+	c.SetLogLevel(logLevel.String())
+	zerolog.TimeFieldFormat = time.RFC3339
+
+	levelWriter := logging.New(server)
+	writers := []io.Writer{levelWriter}
+
+	if c.LogPath() != "" {
+		c.logFile, err = os.OpenFile(c.LogPath(), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "couldn't open logfile")
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, fmt.Sprint("adding file logger to file ", c.logPath))
+			writers = append(writers, c.logFile)
+		}
+	}
+
+	scrubbingMultilevelWriter := logging.NewScrubbingWriter(zerolog.MultiLevelWriter(writers...), c.scrubDict)
+	writer := zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
+		w.Out = scrubbingMultilevelWriter
+		w.NoColor = true
+		w.TimeFormat = time.RFC3339
+		w.PartsOrder = []string{
+			zerolog.TimestampFieldName,
+			zerolog.LevelFieldName,
+			"method",
+			"ext",
+			"separator",
+			zerolog.CallerFieldName,
+			zerolog.MessageFieldName,
+		}
+		w.FieldsExclude = []string{"method", "separator", "ext"}
+	})
+	c.m.Lock()
+	defer c.m.Unlock()
+	log.Logger = zerolog.New(writer).With().Timestamp().Str("separator", "-").Str("method", "").Str("ext", "").Logger()
+	c.engine.SetLogger(&log.Logger)
+	c.logger = &log.Logger
+}
+
+// DisableLoggingToFile closes the open log file and sets the global logger back to it's default
+func (c *Config) DisableLoggingToFile() {
+	log.Info().Msgf("Disabling file logging to %v", c.logPath)
+	c.logPath = ""
+	log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+	if c.logFile != nil {
+		_ = c.logFile.Close()
+	}
+}
+
+func (c *Config) SetConfigFile(configFile string) { c.configFile = configFile }
+
+func getCodeApiUrlFromCustomEndpoint(endpoint string) (string, error) {
+	// Code API endpoint can be set via env variable for debugging using local API instance
+	deeproxyEnvVarUrl := strings.Trim(os.Getenv(deeproxyApiUrlKey), "/")
+	if deeproxyEnvVarUrl != "" {
+		return deeproxyEnvVarUrl, nil
+	}
+
+	if endpoint == "" {
+		return DefaultDeeproxyApiUrl, nil
+	}
+
+	// Use Vulnmap API endpoint to determine deeproxy API URL
+	endpointUrl, err := url.Parse(strings.Trim(endpoint, " "))
+	if err != nil {
+		return "", err
+	}
+
+	m := regexp.MustCompile(`^(ap[pi]\.)?`)
+	endpointUrl.Host = m.ReplaceAllString(endpointUrl.Host, "deeproxy.")
+	endpointUrl.Path = ""
+
+	return endpointUrl.String(), nil
+}
+
+func vulnmapCodeAnalysisTimeoutFromEnv() time.Duration {
+	var vulnmapCodeTimeout time.Duration
+	var err error
+	env := os.Getenv(vulnmapCodeTimeoutKey)
+	if env == "" {
+		vulnmapCodeTimeout = 12 * time.Hour
+	} else {
+		vulnmapCodeTimeout, err = time.ParseDuration(env)
+		if err != nil {
+			log.Err(err).Msg("couldn't convert timeout env variable to integer")
+		}
+	}
+	return vulnmapCodeTimeout
+}
+
+func (c *Config) updatePath(pathExtension string) {
+	if pathExtension == "" {
+		return
+	}
+	err := os.Setenv("PATH", os.Getenv("PATH")+pathListSeparator+pathExtension)
+	c.path += pathListSeparator + pathExtension
+	log.Debug().Str("method", "updatePath").Msg("updated path with " + pathExtension)
+	log.Debug().Str("method", "updatePath").Msgf("PATH = %s", os.Getenv("PATH"))
+	if err != nil {
+		log.Warn().Str("method", "loadFile").Msg("Couldn't update path ")
+	}
+}
+
+// The order of the files is important - first file variable definitions win!
+func (c *Config) configFiles() []string {
+	var files []string
+	configFile := c.configFile
+	if configFile != "" {
+		files = append(files, configFile)
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = xdg.Home
+	}
+	stdFiles := []string{
+		".vulnmap.env",
+		home + "/.vulnmap.env",
+	}
+	return append(files, stdFiles...)
+}
+
+func (c *Config) Organization() string {
+	return c.engine.GetConfiguration().GetString(configuration.ORGANIZATION)
+}
+
+func (c *Config) SetOrganization(organization string) {
+	c.engine.GetConfiguration().Set(configuration.ORGANIZATION, organization)
+}
+
+func (c *Config) ManageBinariesAutomatically() bool {
+	return c.manageBinariesAutomatically.Get()
+}
+
+func (c *Config) SetManageBinariesAutomatically(enabled bool) {
+	c.manageBinariesAutomatically.Set(enabled)
+}
+
+func (c *Config) ManageCliBinariesAutomatically() bool {
+	if c.engine.GetConfiguration().GetString(cli_constants.EXECUTION_MODE_KEY) != cli_constants.EXECUTION_MODE_VALUE_STANDALONE {
+		return false
+	}
+	return c.ManageBinariesAutomatically()
+}
+
+func (c *Config) IsTelemetryEnabled() bool {
+	return c.isTelemetryEnabled.Get()
+}
+
+func (c *Config) SetTelemetryEnabled(enabled bool) {
+	c.isTelemetryEnabled.Set(enabled)
+	c.engine.GetConfiguration().Set(configuration.ANALYTICS_DISABLED, !enabled)
+}
+
+func (c *Config) telemetryEnablementFromEnv() {
+	value := os.Getenv(EnableTelemetry)
+	if value == "1" {
+		c.SetTelemetryEnabled(false)
+	} else {
+		c.SetTelemetryEnabled(true)
+	}
+}
+
+func (c *Config) DeviceID() string {
+	return c.deviceId
+}
+
+func (c *Config) SetDeviceID(deviceId string) {
+	c.deviceId = deviceId
+}
+
+func (c *Config) ClientCapabilities() lsp.ClientCapabilities {
+	return c.clientCapabilities
+}
+
+func (c *Config) SetClientCapabilities(capabilities lsp.ClientCapabilities) {
+	c.clientCapabilities = capabilities
+}
+
+func (c *Config) Path() string {
+	return c.path
+}
+
+func (c *Config) AutomaticAuthentication() bool {
+	return c.automaticAuthentication
+}
+
+func (c *Config) SetAutomaticAuthentication(value bool) {
+	c.automaticAuthentication = value
+}
+
+func (c *Config) SetAutomaticScanning(value bool) {
+	c.automaticScanning = value
+}
+
+func (c *Config) addDefaults() {
+	if //goland:noinspection GoBoolExpressions
+	runtime.GOOS != windows {
+		c.updatePath("/usr/local/bin")
+		c.updatePath("/bin")
+		c.updatePath(xdg.Home + "/bin")
+	}
+	c.determineJavaHome()
+	c.determineMavenHome()
+}
+
+func (c *Config) SetIntegrationName(integrationName string) {
+	c.Engine().GetConfiguration().Set(configuration.INTEGRATION_NAME, integrationName)
+}
+
+func (c *Config) SetIntegrationVersion(integrationVersion string) {
+	c.Engine().GetConfiguration().Set(configuration.INTEGRATION_VERSION, integrationVersion)
+}
+
+func (c *Config) SetIdeName(ideName string) {
+	c.Engine().GetConfiguration().Set(configuration.INTEGRATION_ENVIRONMENT, ideName)
+}
+func (c *Config) SetIdeVersion(ideVersion string) {
+	c.Engine().GetConfiguration().Set(configuration.INTEGRATION_ENVIRONMENT_VERSION, ideVersion)
+}
+
+func (c *Config) TrustedFolders() []string {
+	return c.trustedFolders
+}
+
+func (c *Config) SetTrustedFolders(folderPaths []string) {
+	c.trustedFolders = folderPaths
+}
+
+func (c *Config) DisplayableIssueTypes() map[product.FilterableIssueType]bool {
+	enabled := make(map[product.FilterableIssueType]bool)
+	enabled[product.FilterableIssueTypeOpenSource] = c.IsVulnmapOssEnabled()
+
+	// Handle backwards compatibility.
+	// Older configurations had a single value for both vulnmap code issue types (security & quality)
+	// New configurations have 1 for each, and should ignore the general IsVulnmapCodeEnabled value.
+	enabled[product.FilterableIssueTypeCodeSecurity] = c.IsVulnmapCodeEnabled() || c.IsVulnmapCodeSecurityEnabled()
+	enabled[product.FilterableIssueTypeCodeQuality] = c.IsVulnmapCodeEnabled() || c.IsVulnmapCodeQualityEnabled()
+
+	enabled[product.FilterableIssueTypeInfrastructureAsCode] = c.IsVulnmapIacEnabled()
+
+	return enabled
+}
+
+func (c *Config) IsVulnmapCodeSecurityEnabled() bool {
+	return c.activateVulnmapCodeSecurity
+}
+
+func (c *Config) EnableVulnmapCodeSecurity(activate bool) {
+	c.activateVulnmapCodeSecurity = activate
+}
+
+func (c *Config) IsVulnmapCodeQualityEnabled() bool {
+	return c.activateVulnmapCodeQuality
+}
+
+func (c *Config) EnableVulnmapCodeQuality(activate bool) {
+	c.activateVulnmapCodeQuality = activate
+}
+
+func (c *Config) OsPlatform() string {
+	return c.osPlatform
+}
+
+func (c *Config) SetOsPlatform(osPlatform string) {
+	c.osPlatform = osPlatform
+}
+
+func (c *Config) OsArch() string {
+	return c.osArch
+}
+
+func (c *Config) SetOsArch(osArch string) {
+	c.osArch = osArch
+}
+
+func (c *Config) RuntimeName() string {
+	return c.runtimeName
+}
+
+func (c *Config) SetRuntimeName(runtimeName string) {
+	c.runtimeName = runtimeName
+}
+
+func (c *Config) RuntimeVersion() string {
+	return c.runtimeVersion
+}
+
+func (c *Config) SetRuntimeVersion(runtimeVersion string) {
+	c.runtimeVersion = runtimeVersion
+}
+
+func (c *Config) IsAutoScanEnabled() bool {
+	return c.automaticScanning
+}
+
+func (c *Config) SetAuthenticationMethod(method lsp.AuthenticationMethod) {
+	c.authenticationMethod = method
+}
+
+func (c *Config) AuthenticationMethod() lsp.AuthenticationMethod {
+	return c.authenticationMethod
+}
+
+func (c *Config) Engine() workflow.Engine {
+	return c.engine
+}
+
+func (c *Config) SetEngine(engine workflow.Engine) {
+	c.engine = engine
+}
+
+func (c *Config) IsVulnmapLearnCodeActionsEnabled() bool {
+	return c.enableVulnmapLearnCodeActions
+}
+
+func (c *Config) SetVulnmapLearnCodeActionsEnabled(enabled bool) {
+	c.enableVulnmapLearnCodeActions = enabled
+}
+
+func (c *Config) SetLogLevel(level string) {
+	c.m.Lock()
+	defer c.m.Unlock()
+	parseLevel, err := zerolog.ParseLevel(level)
+	if err == nil {
+		zerolog.SetGlobalLevel(parseLevel)
+	}
+}
+
+func (c *Config) LogLevel() string {
+	c.m.Lock()
+	defer c.m.Unlock()
+	return zerolog.GlobalLevel().String()
+}
+
+func (c *Config) Logger() *zerolog.Logger {
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.logger
+}
+
+func (c *Config) TokenAsOAuthToken() (oauth2.Token, error) {
+	var oauthToken oauth2.Token
+	if _, err := uuid.Parse(c.Token()); err == nil {
+		log.Trace().Msgf("token is a uuid, not an oauth token")
+		return oauthToken, fmt.Errorf("token is a uuid, not an oauth token")
+	}
+	err := json.Unmarshal([]byte(c.Token()), &oauthToken)
+	if err != nil {
+		log.Trace().Err(err).Msg("unable to unmarshal oauth token")
+		return oauthToken, err
+	}
+	return oauthToken, nil
+}
+
+func (c *Config) Storage() StorageWithCallbacks {
+	return c.storage
+}
+
+func (c *Config) IdeVersion() string {
+	return c.Engine().GetConfiguration().GetString(configuration.INTEGRATION_ENVIRONMENT_VERSION)
+}
+func (c *Config) IdeName() string {
+	return c.Engine().GetConfiguration().GetString(configuration.INTEGRATION_ENVIRONMENT)
+}
+
+func (c *Config) IsFedramp() bool {
+	return c.Engine().GetConfiguration().GetBool(configuration.IS_FEDRAMP)
+}
+
+func (c *Config) IsAnalyticsEnabled() bool {
+	return c.analyticsEnabled
+}
+
+func (c *Config) SetAnalyticsEnabled(enableAnalytics bool) {
+	c.analyticsEnabled = enableAnalytics
+}

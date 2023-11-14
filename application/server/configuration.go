@@ -1,0 +1,436 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"reflect"
+	"strconv"
+	"strings"
+
+	"github.com/creachadair/jrpc2"
+	"github.com/creachadair/jrpc2/handler"
+	"github.com/rs/zerolog/log"
+	"github.com/khulnasoft-lab/go-application-framework/pkg/auth"
+	"github.com/khulnasoft-lab/go-application-framework/pkg/configuration"
+	"golang.org/x/oauth2"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/application/config"
+	"github.com/khulnasoft-lab/vulnmap-ls/application/di"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/ide/workspace"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/observability/ux"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/vulnmap"
+	auth2 "github.com/khulnasoft-lab/vulnmap-ls/infrastructure/cli/auth"
+	"github.com/khulnasoft-lab/vulnmap-ls/infrastructure/oauth"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/lsp"
+)
+
+var cachedOriginalPath = ""
+
+func workspaceDidChangeConfiguration(srv *jrpc2.Server) jrpc2.Handler {
+	return handler.New(func(ctx context.Context, params lsp.DidChangeConfigurationParams) (bool, error) {
+		log.Info().Str("method", "WorkspaceDidChangeConfiguration").Interface("params", params).Msg("RECEIVED")
+		defer log.Info().Str("method", "WorkspaceDidChangeConfiguration").Interface("params", params).Msg("DONE")
+
+		emptySettings := lsp.Settings{}
+		if !reflect.DeepEqual(params.Settings, emptySettings) {
+			// client used settings push
+			UpdateSettings(params.Settings)
+			return true, nil
+		}
+
+		// client expects settings pull. E.g. VS Code uses pull model & sends empty settings when configuration is updated.
+		if !config.CurrentConfig().ClientCapabilities().Workspace.Configuration {
+			log.Info().Msg("Pull model for workspace configuration not supported, ignoring workspace/didChangeConfiguration notification.")
+			return false, nil
+		}
+
+		configRequestParams := lsp.ConfigurationParams{
+			Items: []lsp.ConfigurationItem{
+				{Section: "vulnmap"},
+			},
+		}
+		res, err := srv.Callback(ctx, "workspace/configuration", configRequestParams)
+		if err != nil {
+			return false, err
+		}
+
+		var fetchedSettings []lsp.Settings
+		err = res.UnmarshalResult(&fetchedSettings)
+		if err != nil {
+			return false, err
+		}
+
+		if !reflect.DeepEqual(fetchedSettings[0], emptySettings) {
+			UpdateSettings(fetchedSettings[0])
+			return true, nil
+		}
+
+		return false, nil
+	})
+}
+
+func InitializeSettings(settings lsp.Settings) {
+	writeSettings(settings, true)
+	updateAutoAuthentication(settings)
+	updateDeviceInformation(settings)
+	updateAutoScan(settings)
+}
+
+func UpdateSettings(settings lsp.Settings) {
+	currentConfig := config.CurrentConfig()
+	previouslyEnabledProducts := currentConfig.DisplayableIssueTypes()
+	previousAutoScan := currentConfig.IsAutoScanEnabled()
+
+	writeSettings(settings, false)
+
+	// If a product was removed, clear all issues for this product
+	ws := workspace.Get()
+	if ws != nil {
+		newSupportedProducts := currentConfig.DisplayableIssueTypes()
+		for removedIssueType, wasSupported := range previouslyEnabledProducts {
+			if wasSupported && !newSupportedProducts[removedIssueType] {
+				ws.ClearIssuesByType(removedIssueType)
+			}
+		}
+	}
+
+	if currentConfig.IsAutoScanEnabled() != previousAutoScan {
+		di.Analytics().ScanModeIsSelected(ux.ScanModeIsSelectedProperties{ScanningMode: settings.ScanningMode})
+	}
+}
+
+func writeSettings(settings lsp.Settings, initialize bool) {
+	emptySettings := lsp.Settings{}
+	if reflect.DeepEqual(settings, emptySettings) {
+		return
+	}
+	updateSeverityFilter(settings.FilterSeverity)
+	updateProductEnablement(settings)
+	updateCliConfig(settings)
+
+	// updateApiEndpoints overwrites the authentication method in certain cases (oauth2)
+	// this is why it needs to be called after updateAuthenticationMethod
+	updateAuthenticationMethod(settings)
+	updateApiEndpoints(settings, initialize)
+
+	// setting the token requires to know the authentication method
+	updateToken(settings.Token)
+
+	updateEnvironment(settings)
+	updatePathFromSettings(settings)
+	updateTelemetry(settings)
+	updateOrganization(settings)
+	manageBinariesAutomatically(settings)
+	updateTrustedFolders(settings)
+	updateVulnmapCodeSecurity(settings)
+	updateVulnmapCodeQuality(settings)
+	updateRuntimeInfo(settings)
+	updateAutoScan(settings)
+	updateVulnmapLearnCodeActions(settings)
+
+	if initialize {
+		config.CurrentConfig().SetAnalyticsEnabled(settings.EnableAnalytics)
+	}
+}
+
+func updateAuthenticationMethod(settings lsp.Settings) {
+	if settings.AuthenticationMethod == "" {
+		return
+	}
+	c := config.CurrentConfig()
+	c.SetAuthenticationMethod(settings.AuthenticationMethod)
+	if config.CurrentConfig().AuthenticationMethod() == lsp.OAuthAuthentication {
+		configureOAuth(c, auth.RefreshToken)
+	} else {
+		cliAuthenticationProvider := auth2.NewCliAuthenticationProvider(di.ErrorReporter())
+		di.AuthenticationService().SetProvider(cliAuthenticationProvider)
+	}
+}
+
+func credentialsUpdateCallback(_ string, value any) {
+	newToken, ok := value.(string)
+	if !ok {
+		msg := fmt.Sprintf("Failed to cast token value of type %T to string", value)
+		log.Error().Str("method", "storage callback token").
+			Msgf(msg)
+		di.ErrorReporter().CaptureError(errors.New(msg))
+		return
+	}
+	go di.AuthenticationService().UpdateCredentials(newToken, true)
+}
+
+func configureOAuth(
+	c *config.Config,
+	customTokenRefresherFunc func(
+		ctx context.Context,
+		oauthConfig *oauth2.Config,
+		token *oauth2.Token,
+	) (*oauth2.Token, error),
+) {
+	engine := c.Engine()
+	conf := engine.GetConfiguration()
+
+	authenticationService := di.AuthenticationService()
+
+	openBrowserFunc := func(url string) {
+		authenticationService.Provider().SetAuthURL(url)
+		vulnmap.DefaultOpenBrowserFunc(url)
+	}
+	conf.Set(configuration.FF_OAUTH_AUTH_FLOW_ENABLED, true)
+
+	c.Storage().RegisterCallback(auth.CONFIG_KEY_OAUTH_TOKEN, credentialsUpdateCallback)
+
+	authenticator := auth.NewOAuth2AuthenticatorWithOpts(
+		conf,
+		auth.WithOpenBrowserFunc(openBrowserFunc),
+		auth.WithTokenRefresherFunc(customTokenRefresherFunc),
+	)
+	oAuthProvider := oauth.NewOAuthProvider(conf, authenticator)
+	authenticationService.SetProvider(oAuthProvider)
+}
+
+func updateRuntimeInfo(settings lsp.Settings) {
+	c := config.CurrentConfig()
+	c.SetOsArch(settings.OsArch)
+	c.SetOsPlatform(settings.OsPlatform)
+	c.SetRuntimeVersion(settings.RuntimeVersion)
+	c.SetRuntimeName(settings.RuntimeName)
+}
+
+func updateTrustedFolders(settings lsp.Settings) {
+	trustedFoldersFeatureEnabled, err := strconv.ParseBool(settings.EnableTrustedFoldersFeature)
+	if err == nil {
+		config.CurrentConfig().SetTrustedFolderFeatureEnabled(trustedFoldersFeatureEnabled)
+	} else {
+		config.CurrentConfig().SetTrustedFolderFeatureEnabled(true)
+	}
+
+	if settings.TrustedFolders != nil {
+		config.CurrentConfig().SetTrustedFolders(settings.TrustedFolders)
+	}
+}
+
+func updateAutoAuthentication(settings lsp.Settings) {
+	// Unless the field is included and set to false, auto-auth should be true by default.
+	autoAuth, err := strconv.ParseBool(settings.AutomaticAuthentication)
+	if err == nil {
+		config.CurrentConfig().SetAutomaticAuthentication(autoAuth)
+	} else {
+		// When the field is omitted, set to true by default
+		config.CurrentConfig().SetAutomaticAuthentication(true)
+	}
+}
+
+func updateDeviceInformation(settings lsp.Settings) {
+	deviceId := strings.TrimSpace(settings.DeviceId)
+	if deviceId != "" {
+		config.CurrentConfig().SetDeviceID(deviceId)
+	}
+}
+
+func updateAutoScan(settings lsp.Settings) {
+	// Auto scan true by default unless the AutoScan value in the settings is not missing & false
+	autoScan := true
+	if settings.ScanningMode == "manual" {
+		autoScan = false
+	}
+
+	config.CurrentConfig().SetAutomaticScanning(autoScan)
+}
+
+func updateVulnmapLearnCodeActions(settings lsp.Settings) {
+	enable := true
+	if settings.EnableVulnmapLearnCodeActions == "false" {
+		enable = false
+	}
+
+	config.CurrentConfig().SetVulnmapLearnCodeActionsEnabled(enable)
+}
+
+func updateToken(token string) {
+	// Token was sent from the client, no need to send notification
+	di.AuthenticationService().UpdateCredentials(token, false)
+}
+
+func updateApiEndpoints(settings lsp.Settings, initialization bool) {
+	vulnmapApiUrl := strings.Trim(settings.Endpoint, " ")
+	c := config.CurrentConfig()
+	endpointsUpdated := c.UpdateApiEndpoints(vulnmapApiUrl)
+
+	if endpointsUpdated && !initialization {
+		di.AuthenticationService().Logout(context.Background())
+		workspace.Get().ClearIssues(context.Background())
+	}
+
+	// overwrite authentication method if gov domain
+	if c.IsFedramp() {
+		settings.AuthenticationMethod = lsp.OAuthAuthentication
+		updateAuthenticationMethod(settings)
+	}
+
+	// a custom set vulnmap code api (e.g. for testing) always overwrites automatic config
+	if settings.VulnmapCodeApi != "" {
+		c.SetVulnmapCodeApi(settings.VulnmapCodeApi)
+	}
+}
+
+func updateOrganization(settings lsp.Settings) {
+	org := strings.TrimSpace(settings.Organization)
+	if org != "" {
+		config.CurrentConfig().SetOrganization(org)
+	}
+}
+
+func updateTelemetry(settings lsp.Settings) {
+	parseBool, err := strconv.ParseBool(settings.SendErrorReports)
+	if err != nil {
+		log.Debug().Msgf("couldn't read send error reports %s", settings.SendErrorReports)
+	} else {
+		config.CurrentConfig().SetErrorReportingEnabled(parseBool)
+	}
+
+	parseBool, err = strconv.ParseBool(settings.EnableTelemetry)
+	if err != nil {
+		log.Debug().Msgf("couldn't read enable telemetry %s", settings.SendErrorReports)
+	} else {
+		config.CurrentConfig().SetTelemetryEnabled(parseBool)
+		if parseBool {
+			go di.Analytics().Identify()
+		}
+	}
+}
+
+func manageBinariesAutomatically(settings lsp.Settings) {
+	parseBool, err := strconv.ParseBool(settings.ManageBinariesAutomatically)
+	if err != nil {
+		log.Debug().Msgf("couldn't read manage binaries automatically %s", settings.ManageBinariesAutomatically)
+	} else {
+		config.CurrentConfig().SetManageBinariesAutomatically(parseBool)
+	}
+}
+
+func updateVulnmapCodeSecurity(settings lsp.Settings) {
+	parseBool, err := strconv.ParseBool(settings.ActivateVulnmapCodeSecurity)
+	if err != nil {
+		log.Debug().Msgf("couldn't read IsVulnmapCodeSecurityEnabled %s", settings.ActivateVulnmapCodeSecurity)
+	} else {
+		config.CurrentConfig().EnableVulnmapCodeSecurity(parseBool)
+	}
+}
+
+func updateVulnmapCodeQuality(settings lsp.Settings) {
+	parseBool, err := strconv.ParseBool(settings.ActivateVulnmapCodeQuality)
+	if err != nil {
+		log.Debug().Msgf("couldn't read IsVulnmapCodeQualityEnabled %s", settings.ActivateVulnmapCodeQuality)
+	} else {
+		config.CurrentConfig().EnableVulnmapCodeQuality(parseBool)
+	}
+}
+
+// TODO store in config, move parsing to CLI
+func updatePathFromSettings(settings lsp.Settings) {
+	// when changing the path from settings, we cache the original path first, to be able to restore it later
+	if len(cachedOriginalPath) == 0 {
+		cachedOriginalPath = os.Getenv("PATH")
+	}
+
+	if len(settings.Path) > 0 {
+		_ = os.Unsetenv("Path") // unset the path first to work around issues on Windows OS, where PATH can be Path
+		err := os.Setenv("PATH", settings.Path+string(os.PathListSeparator)+cachedOriginalPath)
+		log.Info().Str("method", "updatePathFromSettings").Msgf("added configured path to PATH Environment Variable '%s'", os.Getenv("PATH"))
+		if err != nil {
+			log.Err(err).Str("method", "updatePathFromSettings").Msgf("couldn't add path %s", settings.Path)
+		}
+	} else {
+		_ = os.Setenv("PATH", cachedOriginalPath)
+		log.Info().Str("method", "updatePathFromSettings").Msgf("restore initial path '%s'", os.Getenv("PATH"))
+	}
+}
+
+// TODO store in config, move parsing to CLI
+func updateEnvironment(settings lsp.Settings) {
+	envVars := strings.Split(settings.AdditionalEnv, ";")
+	for _, envVar := range envVars {
+		v := strings.Split(envVar, "=")
+		if len(v) != 2 {
+			continue
+		}
+		err := os.Setenv(v[0], v[1])
+		if err != nil {
+			log.Err(err).Msgf("couldn't set env variable %s", envVar)
+		}
+	}
+}
+
+func updateCliConfig(settings lsp.Settings) {
+	var err error
+	cliSettings := &config.CliSettings{}
+	cliSettings.Insecure, err = strconv.ParseBool(settings.Insecure)
+	if err != nil {
+		log.Debug().Msg("couldn't parse insecure setting")
+	}
+	cliSettings.AdditionalOssParameters = strings.Split(settings.AdditionalParams, " ")
+	cliSettings.SetPath(strings.TrimSpace(settings.CliPath))
+	currentConfig := config.CurrentConfig()
+	conf := currentConfig.Engine().GetConfiguration()
+	conf.Set(configuration.INSECURE_HTTPS, cliSettings.Insecure)
+	currentConfig.SetCliSettings(cliSettings)
+}
+
+func updateProductEnablement(settings lsp.Settings) {
+	parseBool, err := strconv.ParseBool(settings.ActivateVulnmapCode)
+	currentConfig := config.CurrentConfig()
+	if err != nil {
+		log.Debug().Msg("couldn't parse code setting")
+	} else {
+		currentConfig.SetVulnmapCodeEnabled(parseBool)
+		currentConfig.EnableVulnmapCodeQuality(parseBool)
+		currentConfig.EnableVulnmapCodeSecurity(parseBool)
+	}
+	parseBool, err = strconv.ParseBool(settings.ActivateVulnmapOpenSource)
+	if err != nil {
+		log.Debug().Msg("couldn't parse open source setting")
+	} else {
+		currentConfig.SetVulnmapOssEnabled(parseBool)
+	}
+	parseBool, err = strconv.ParseBool(settings.ActivateVulnmapIac)
+	if err != nil {
+		log.Debug().Msg("couldn't parse iac setting")
+	} else {
+		currentConfig.SetVulnmapIacEnabled(parseBool)
+	}
+}
+
+func updateSeverityFilter(s lsp.SeverityFilter) {
+	log.Debug().Str("method", "updateSeverityFilter").Interface("severityFilter", s).Msg("Updating severity filter:")
+	modified := config.CurrentConfig().SetSeverityFilter(s)
+
+	if modified {
+		ws := workspace.Get()
+		if ws == nil {
+			return
+		}
+
+		for _, folder := range ws.Folders() {
+			folder.FilterAndPublishCachedDiagnostics("")
+		}
+	}
+}

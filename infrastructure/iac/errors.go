@@ -1,0 +1,46 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package iac
+
+const (
+	noLoadableInputErrorCode           = 2114
+	invalidJsonFileErrorCodeErrorCode  = 1021
+	failedToParseInputErrorCode        = 2105
+	notRecognizedOptionErrorCode       = 422
+	couldNotFindValidIacFilesErrorCode = 1010
+	failedToParseTerraform             = 1040
+	invalidYamlFileError               = 1022
+)
+
+var ignorableIacErrorCodes = map[int]bool{
+	noLoadableInputErrorCode: true,
+
+	// Ignoring IAC errors for .json files with broken syntax.
+	// There are cases where there are no IAC files to scan, but
+	// IAC finds a random malformed JSON file and return an error.
+	invalidJsonFileErrorCodeErrorCode: true,
+	invalidYamlFileError:              true,
+
+	failedToParseInputErrorCode: true,
+
+	notRecognizedOptionErrorCode: true,
+
+	// No reason to report when there aren't any valid IaC files
+	couldNotFindValidIacFilesErrorCode: true,
+
+	failedToParseTerraform: true,
+}
