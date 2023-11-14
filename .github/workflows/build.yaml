@@ -32,7 +32,7 @@ jobs:
           go-version-file: './go.mod'
 
       - name: Set up Vulnmap CLI
-        uses: vulnmap/actions/setup@master
+        uses: khulnasoft-lab/actions/setup@master
 
       - name: Cache Pact CLI tools
         id: cache-pact
