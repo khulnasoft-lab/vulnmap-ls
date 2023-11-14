@@ -17,7 +17,7 @@ require (
 	github.com/gogs/minwinsvc v0.0.0-20170301035411-95be6356811a // indirect
 	github.com/mattn/go-colorable v0.1.2 // indirect
 	github.com/mcuadros/go-version v0.0.0-20190308113854-92cdf37c5b75 // indirect
-	github.com/pstember/go-goof/hello v0.0.0-20190715094659-dd899fd4135f
+	github.com/pstember/go-goof/hello 73c2655d0f64
 	github.com/saintfish/chardet v0.0.0-20120816061221-3af4cd4741ca // indirect
 	golang.org/x/net v0.0.0-20190620200207-3b0461eec859 // indirect
 	gopkg.in/bufio.v1 v1.0.0-20140618132640-567b2bfa514e // indirect
