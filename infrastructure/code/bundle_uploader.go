@@ -1,0 +1,159 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package code
+
+import (
+	"context"
+	"math"
+	"path/filepath"
+
+	"github.com/puzpuzpuz/xsync"
+	"github.com/rs/zerolog/log"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/observability/performance"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/progress"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/util"
+)
+
+type BundleUploader struct {
+	VulnmapCode             VulnmapCodeClient
+	supportedExtensions  *xsync.MapOf[string, bool]
+	supportedConfigFiles *xsync.MapOf[string, bool]
+	instrumentor         performance.Instrumentor
+}
+
+func NewBundler(VulnmapCode VulnmapCodeClient, instrumentor performance.Instrumentor) *BundleUploader {
+	return &BundleUploader{
+		VulnmapCode:             VulnmapCode,
+		instrumentor:         instrumentor,
+		supportedExtensions:  xsync.NewMapOf[bool](),
+		supportedConfigFiles: xsync.NewMapOf[bool](),
+	}
+}
+
+func (b *BundleUploader) Upload(ctx context.Context, bundle Bundle, files map[string]BundleFile) (Bundle, error) {
+	method := "code.Upload"
+	s := b.instrumentor.StartSpan(ctx, method)
+	defer b.instrumentor.Finish(s)
+
+	// make uploads in batches until no missing files reported anymore
+	t := progress.NewTracker(false)
+	t.BeginWithMessage("Vulnmap Code analysis for "+bundle.rootPath, "Uploading batches...")
+	defer t.EndWithMessage("Upload done.")
+
+	for len(bundle.missingFiles) > 0 {
+		uploadBatches := b.groupInBatches(s.Context(), bundle, files)
+		if len(uploadBatches) == 0 {
+			return bundle, nil
+		}
+
+		uploadedFiles := 0
+		for i, uploadBatch := range uploadBatches {
+			if err := ctx.Err(); err != nil {
+				return bundle, err
+			}
+			err := bundle.Upload(s.Context(), uploadBatch)
+			if err != nil {
+				return Bundle{}, err
+			}
+			uploadedFiles += len(uploadBatch.documents)
+			percentage := float64(i) / float64(len(uploadBatches)) * 100
+			t.Report(int(math.RoundToEven(percentage)))
+		}
+	}
+
+	return bundle, nil
+}
+
+func (b *BundleUploader) groupInBatches(
+	ctx context.Context,
+	bundle Bundle,
+	files map[string]BundleFile,
+) []*UploadBatch {
+	t := progress.NewTracker(false)
+	t.BeginWithMessage("Vulnmap Code analysis for "+bundle.rootPath, "Creating batches...")
+	defer t.EndWithMessage("Batches created.")
+
+	method := "code.groupInBatches"
+	s := b.instrumentor.StartSpan(ctx, method)
+	defer b.instrumentor.Finish(s)
+
+	var batches []*UploadBatch
+	uploadBatch := NewUploadBatch()
+	var i = 0
+	for _, filePath := range bundle.missingFiles {
+		if len(batches) == 0 { // first batch added after first file found
+			batches = append(batches, uploadBatch)
+		}
+
+		file := files[filePath]
+		var fileContent = []byte(file.Content)
+		if uploadBatch.canFitFile(filePath, fileContent) {
+			log.Trace().Str("path", filePath).Int("size", len(fileContent)).Msgf("added to bundle #%v", len(batches))
+			uploadBatch.documents[filePath] = file
+		} else {
+			log.Trace().Str("path", filePath).Int("size",
+				len(fileContent)).Msgf("created new bundle - %v bundles in this upload so far", len(batches))
+			newUploadBatch := NewUploadBatch()
+			newUploadBatch.documents[filePath] = file
+			batches = append(batches, newUploadBatch)
+			uploadBatch = newUploadBatch
+		}
+		percentage := float64(i) / float64(len(files)) * 100
+		t.Report(int(math.RoundToEven(percentage)))
+	}
+	return batches
+}
+
+func (b *BundleUploader) isSupported(ctx context.Context, file string) (bool, error) {
+	if b.supportedExtensions.Size() == 0 && b.supportedConfigFiles.Size() == 0 {
+
+		filters, err := b.VulnmapCode.GetFilters(ctx)
+		if err != nil {
+			log.Error().Err(err).Msg("could not get filters")
+			return false, err
+		}
+
+		for _, ext := range filters.Extensions {
+			b.supportedExtensions.Store(ext, true)
+		}
+		for _, configFile := range filters.ConfigFiles {
+			// .gitignore and .dcignore should not be uploaded
+			// (https://github.com/khulnasoft-lab/code-client/blob/d6f6a2ce4c14cb4b05aa03fb9f03533d8cf6ca4a/src/files.ts#L138)
+			if configFile == ".gitignore" || configFile == ".dcignore" {
+				continue
+			}
+			b.supportedConfigFiles.Store(configFile, true)
+		}
+	}
+
+	fileExtension := filepath.Ext(file)
+	fileName := filepath.Base(file) // Config files are compared to the file name, not just the extensions
+	_, isSupportedExtension := b.supportedExtensions.Load(fileExtension)
+	_, isSupportedConfigFile := b.supportedConfigFiles.Load(fileName)
+
+	return isSupportedExtension || isSupportedConfigFile, nil
+}
+
+func getFileFrom(filePath string, content []byte) BundleFile {
+	file := BundleFile{
+		Hash:    util.Hash(content),
+		Content: string(content),
+	}
+	log.Trace().Str("method", "getFileFrom").Str("hash", file.Hash).Str("filePath", filePath).Send()
+	return file
+}

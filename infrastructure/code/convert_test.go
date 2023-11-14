@@ -1,0 +1,901 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package code
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/application/config"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/vulnmap"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/product"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/testutil"
+)
+
+func getSarifResponseJson(filePath string) string {
+	filePath = strings.ReplaceAll(filePath, `\`, `\\`)
+	return fmt.Sprintf(`{
+  "type": "sarif",
+  "progress": 1,
+  "status": "COMPLETE",
+  "timing": {
+    "fetchingCode": 2,
+    "queue": 22,
+    "analysis": 3015
+  },
+  "coverage": [
+    {
+      "files": 1,
+      "isSupported": false,
+      "lang": "DIGITAL CommandData Language"
+    },
+    {
+      "files": 1,
+      "isSupported": true,
+      "lang": "Java"
+    }
+  ],
+  "sarif": {
+    "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+    "version": "2.1.0",
+    "runs": [
+      {
+        "tool": {
+          "driver": {
+            "name": "VulnmapCode",
+            "semanticVersion": "1.0.0",
+            "version": "1.0.0",
+            "rules": [
+              {
+                "id": "java/DontUsePrintStackTrace",
+                "name": "DontUsePrintStackTrace",
+                "shortDescription": {
+                  "text": "DontUsePrintStackTrace"
+                },
+                "defaultConfiguration": {
+                  "level": "note"
+                },
+                "help": {
+                  "markdown": "",
+                  "text": ""
+                },
+                "properties": {
+                  "tags": [
+                    "java",
+                    "maintenance",
+                    "bug",
+                    "logging",
+                    "exception",
+                    "error"
+                  ],
+                  "categories": [
+                    "Defect"
+                  ],
+                  "exampleCommitFixes": [
+                    {
+                      "commitURL": "https://github.com/apache/flink/commit/5d7c5620804eddd59206b24c87ffc89c12fd1184?diff=split#diff-86ec3e3884662ba3b5f4bb5050221fd6L94",
+                      "lines": [
+                        {
+                          "line": "try {",
+                          "lineNumber": 101,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "  newCopy.read(dis);",
+                          "lineNumber": 102,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "} catch (IOException e) {",
+                          "lineNumber": 103,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "  e.printStackTrace();",
+                          "lineNumber": 94,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "  LOG.error(e);",
+                          "lineNumber": 104,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 105,
+                          "lineChange": "none"
+                        }
+                      ]
+                    },
+                    {
+                      "commitURL": "https://github.com/rtr-nettest/open-rmbt/commit/0fa9d5547c5300cf8162b8f31a40aea6847a5c32?diff=split#diff-7e23eb1aa3b7b4d5db89bfd2860277e5L75",
+                      "lines": [
+                        {
+                          "line": "  }",
+                          "lineNumber": 111,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 112,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "catch (Exception e) {",
+                          "lineNumber": 113,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "  e.printStackTrace();",
+                          "lineNumber": 75,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "  error(e, 0);",
+                          "lineNumber": 114,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "  state.set(JobState.ERROR);",
+                          "lineNumber": 115,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 116,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "finally {",
+                          "lineNumber": 117,
+                          "lineChange": "none"
+                        }
+                      ]
+                    },
+                    {
+                      "commitURL": "https://github.com/wso2/developer-studio/commit/cfd84b83349e67de4b0239733bc6ed01287856b7?diff=split#diff-645425e844adc2eab8197719cbb2fe8dL285",
+                      "lines": [
+                        {
+                          "line": "  } catch (SAXException e) {",
+                          "lineNumber": 282,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "    e.printStackTrace();",
+                          "lineNumber": 283,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "    log.error(e);",
+                          "lineNumber": 282,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "  } catch (IOException e) {",
+                          "lineNumber": 284,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "    e.printStackTrace();",
+                          "lineNumber": 285,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "    log.error(e);",
+                          "lineNumber": 284,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "  }",
+                          "lineNumber": 286,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 287,
+                          "lineChange": "none"
+                        }
+                      ]
+                    }
+                  ],
+                  "exampleCommitDescriptions": [
+                    "improve logging and testing",
+                    "more tests, exceptions",
+                    "log errors to the log file"
+                  ],
+                  "precision": "very-high",
+                  "repoDatasetSize": 5854
+                }
+              },
+              {
+                "id": "java/catchingInterruptedExceptionWithoutInterrupt",
+                "name": "catchingInterruptedExceptionWithoutInterrupt",
+                "shortDescription": {
+                  "text": "catchingInterruptedExceptionWithoutInterrupt"
+                },
+                "defaultConfiguration": {
+                  "level": "warning"
+                },
+                "help": {
+                  "markdown": "",
+                  "text": ""
+                },
+                "properties": {
+                  "tags": [
+                    "java",
+                    "bug",
+                    "maintenance",
+                    "import",
+                    "remoting.jar",
+                    "overwrite"
+                  ],
+                  "categories": [
+                    "Defect"
+                  ],
+                  "exampleCommitFixes": [
+                    {
+                      "commitURL": "https://github.com/markusfisch/ShaderEditor/commit/ea90be086b71df55a675a4a75d35c6f294a634a9?diff=split#diff-924648dd89d8c5ea66b90291ac693c9aL739",
+                      "lines": [
+                        {
+                          "line": "    Thread.sleep(100);",
+                          "lineNumber": 736,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "  }",
+                          "lineNumber": 737,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "} catch (InterruptedException e) {",
+                          "lineNumber": 738,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "  // thread got interrupted, ignore that",
+                          "lineNumber": 739,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "  Thread.currentThread().interrupt();",
+                          "lineNumber": 739,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 740,
+                          "lineChange": "none"
+                        }
+                      ]
+                    },
+                    {
+                      "commitURL": "https://github.com/yegor256/rexsl/commit/c147bbb780882cdf8e62e4de46b8f99b86d94a5c?diff=split#diff-43fdfda5b43f9f592cb0e8fc194b12ddL64",
+                      "lines": [
+                        {
+                          "line": "       // @checkstyle MagicNumber (1 line)",
+                          "lineNumber": 61,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "       Thread.sleep(1000);",
+                          "lineNumber": 62,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "   } catch (java.lang.InterruptedException ex) {",
+                          "lineNumber": 63,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "       container.stop();",
+                          "lineNumber": 64,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "       Thread.currentThread().interrupt();",
+                          "lineNumber": 65,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "   }",
+                          "lineNumber": 66,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "}",
+                          "lineNumber": 67,
+                          "lineChange": "none"
+                        }
+                      ]
+                    },
+                    {
+                      "commitURL": "https://github.com/apache/tomcat/commit/c6bd6f4afbf24c23b3ff03ec652f7e4524694a1e?diff=split#diff-7fc346c0b69fcfdc8e4ad44afc3b345fL85",
+                      "lines": [
+                        {
+                          "line": "        configureTask(worker);",
+                          "lineNumber": 82,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "    } else {",
+                          "lineNumber": 83,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "        try { mutex.wait(); } catch ( java.lang.InterruptedException x ) {Thread.interrupted();}",
+                          "lineNumber": 84,
+                          "lineChange": "removed"
+                        },
+                        {
+                          "line": "        try {",
+                          "lineNumber": 84,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "            mutex.wait();",
+                          "lineNumber": 85,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "        } catch (java.lang.InterruptedException x) {",
+                          "lineNumber": 86,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "            Thread.currentThread().interrupt();",
+                          "lineNumber": 87,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "        }",
+                          "lineNumber": 88,
+                          "lineChange": "added"
+                        },
+                        {
+                          "line": "    }",
+                          "lineNumber": 89,
+                          "lineChange": "none"
+                        },
+                        {
+                          "line": "}//while",
+                          "lineNumber": 90,
+                          "lineChange": "none"
+                        }
+                      ]
+                    }
+                  ],
+                  "exampleCommitDescriptions": [
+                    "Clean up import statements in java code.",
+                    "Overwrite remoting.jar only when necessary."
+                  ],
+                  "precision": "very-high",
+                  "repoDatasetSize": 26
+                }
+              }
+            ]
+          }
+        },
+        "results": [
+          {
+            "ruleId": "java/DontUsePrintStackTrace",
+            "ruleIndex": 0,
+            "level": "note",
+            "message": {
+              "text": "Printing the stack trace of java.lang.InterruptedException. Production code should not use printStackTrace.",
+							"markdown": "Printing the stack trace of {0}. Production code should not use {1}. {2}",
+							"arguments": [
+								"[java.lang.InterruptedException](0)",
+								"[printStackTrace](1)(2)",
+								"[This is a test argument](3)"
+							]
+            },
+            "locations": [
+              {
+                "physicalLocation": {
+                  "artifactLocation": {
+                    "uri": "%s",
+                    "uriBaseId": "dummy"
+                  },
+                  "region": {
+                    "startLine": 6,
+                    "endLine": 6,
+                    "startColumn": 7,
+                    "endColumn": 7
+                  }
+                }
+              }
+            ],
+            "fingerprints": {
+              "0": "35bc91513238a0a06af1824552fb3f838201f6fbbf1d76632b2604242e838d20",
+              "1": "c2e08f55.1333c445.d1699128.15932eef.606b2add.34c3b532.4a752797.e9000d02.c2e08f55.1333c445.cd271e66.e22980a8.d31a8364.2f2c7742.4a752797.54d46e25"
+            },
+            "codeFlows": [
+              {
+                "threadFlows": [
+                  {
+                    "locations": [
+                      {
+                        "location": {
+                          "id": 0,
+                          "physicalLocation": {
+                            "artifactLocation": {
+                              "uri": "%s",
+                              "uriBaseId": "dummy"
+                            },
+                            "region": {
+                              "startLine": 5,
+                              "endLine": 5,
+                              "startColumn": 14,
+                              "endColumn": 33
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "location": {
+                          "id": 1,
+                          "physicalLocation": {
+                            "artifactLocation": {
+																"uri": "%s",
+                              "uriBaseId": "dummy"
+                            },
+                            "region": {
+                              "startLine": 6,
+                              "endLine": 6,
+                              "startColumn": 9,
+                              "endColumn": 23
+                            }
+                          }
+                        }
+                      },
+											{
+												"location": {
+                          "id": 2,
+                          "physicalLocation": {
+                            "artifactLocation": {
+																"uri": "%s",
+                              "uriBaseId": "dummy"
+                            },
+                            "region": {
+                              "startLine": 10,
+                              "endLine": 10,
+                              "startColumn": 10,
+                              "endColumn": 10
+                            }
+                          }
+                        }
+											},
+											{
+												"location": {
+                          "id": 3,
+                          "physicalLocation": {
+                            "artifactLocation": {
+																"uri": "%s",
+                              "uriBaseId": "dummy"
+                            },
+                            "region": {
+                              "startLine": 20,
+                              "endLine": 20,
+                              "startColumn": 20,
+                              "endColumn": 20
+                            }
+                          }
+                        }
+											}
+                    ]
+                  }
+                ]
+              }
+            ],
+            "properties": {
+              "priorityScore": 550,
+              "priorityScoreFactors": [
+                {
+                  "label": true,
+                  "type": "hotFileSource"
+                },
+                {
+                  "label": true,
+                  "type": "fixExamples"
+                },
+                {
+                  "label": true,
+                  "type": "commonlyFixed"
+                }
+              ]
+            }
+          },
+          {
+            "ruleId": "java/catchingInterruptedExceptionWithoutInterrupt",
+            "ruleIndex": 1,
+            "level": "warning",
+            "message": {
+              "text": "Either rethrow this java.lang.InterruptedException or set the interrupted flag on the current thread with 'Thread.currentThread().interrupt()'. Otherwise the information that the current thread was interrupted will be lost.",
+              "markdown": "Either rethrow this {0} or set the interrupted flag on the current thread with 'Thread.currentThread().interrupt()'. Otherwise the information that the current thread was interrupted will be lost.",
+              "arguments": [
+                "[java.lang.InterruptedException](0)"
+              ]
+            },
+            "locations": [
+              {
+                "physicalLocation": {
+                  "artifactLocation": {
+                    "uri": "%s",
+                    "uriBaseId": "dummy"
+                  },
+                  "region": {
+                    "startLine": 5,
+                    "endLine": 5,
+                    "startColumn": 7,
+                    "endColumn": 35
+                  }
+                }
+              }
+            ],
+            "fingerprints": {
+              "0": "4ee04cfd17e0a8bee301d4741b26962f0a9630ac811ab48c06513857c3319f4c",
+              "1": "c2e08f55.1333c445.cd271e66.e22980a8.d31a8364.2f2c7742.4a752797.54d46e25.c2e08f55.1333c445.cd271e66.e22980a8.d31a8364.2f2c7742.4a752797.54d46e25"
+            },
+            "codeFlows": [
+              {
+                "threadFlows": [
+                  {
+                    "locations": [
+                      {
+                        "location": {
+                          "id": 0,
+                          "physicalLocation": {
+                            "artifactLocation": {
+                              "uri": "%s",
+                              "uriBaseId": "dummy"
+                            },
+                            "region": {
+                              "startLine": 5,
+                              "endLine": 5,
+                              "startColumn": 14,
+                              "endColumn": 33
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "properties": {
+              "priorityScore": 600,
+              "priorityScoreFactors": [
+                {
+                  "label": true,
+                  "type": "hotFileSource"
+                },
+                {
+                  "label": true,
+                  "type": "fixExamples"
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "coverage": [
+            {
+              "files": 1,
+              "isSupported": false,
+              "lang": "DIGITAL CommandData Language"
+            },
+            {
+              "files": 1,
+              "isSupported": true,
+              "lang": "Java"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+`, filePath, filePath, filePath, filePath, filePath, filePath, filePath)
+}
+
+func TestVulnmapCodeBackendService_convert_shouldConvertIssues(t *testing.T) {
+	path, issues, resp := setupConversionTests(t, true, true)
+	issueDescriptionURL, _ := url.Parse(codeDescriptionURL)
+	references := referencesForSampleSarifResponse()
+
+	issue := issues[0]
+
+	assert.Equal(t,
+		"DontUsePrintStackTrace: Printing the stack trace of java.lang.InterruptedException. Production code ...",
+		issue.Message)
+	assert.Equal(t, vulnmap.CodeQualityIssue, issue.IssueType)
+	assert.Equal(t, vulnmap.Low, issue.Severity)
+	assert.Equal(t, path, issue.AffectedFilePath)
+	assert.Equal(t, vulnmap.Range{Start: vulnmap.Position{Line: 5, Character: 6}, End: vulnmap.Position{Line: 5,
+		Character: 6}}, issue.Range)
+	assert.Equal(t, product.ProductCode, issue.Product)
+	assert.Equal(t, issueDescriptionURL, issue.IssueDescriptionURL)
+	assert.Equal(t, references, issue.References)
+	assert.Contains(t, issue.FormattedMessage, "Example Commit Fixes")
+	assert.Equal(t, markersForSampleSarifResponse(path), issue.AdditionalData.(vulnmap.CodeIssueData).Markers)
+	assert.Equal(t, resp.Sarif.Runs[0].Tool.Driver.Rules[0].Properties.Cwe, issue.CWEs)
+}
+
+func referencesForSampleSarifResponse() []vulnmap.Reference {
+
+	exampleCommitFix1, _ := url.Parse("https://github.com/apache/flink/commit/5d7c5620804eddd59206b24c87ffc89c12fd1184?diff=split#diff-86ec3e3884662ba3b5f4bb5050221fd6L94")
+	exampleCommitFix2, _ := url.Parse("https://github.com/rtr-nettest/open-rmbt/commit/0fa9d5547c5300cf8162b8f31a40aea6847a5c32?diff=split#diff-7e23eb1aa3b7b4d5db89bfd2860277e5L75")
+	exampleCommitFix3, _ := url.Parse("https://github.com/wso2/developer-studio/commit/cfd84b83349e67de4b0239733bc6ed01287856b7?diff=split#diff-645425e844adc2eab8197719cbb2fe8dL285")
+
+	references := []vulnmap.Reference{
+		{Title: "improve logging and testing", Url: exampleCommitFix1},
+		{Title: "more tests, exceptions", Url: exampleCommitFix2},
+		{Title: "log errors to the log file", Url: exampleCommitFix3},
+	}
+	return references
+}
+
+func markersForSampleSarifResponse(path string) []vulnmap.Marker {
+	references := []vulnmap.Marker{
+		{
+			Msg: [2]int{28, 57},
+			Pos: []vulnmap.MarkerPosition{
+				{
+					Rows: [2]int{4, 4},
+					Cols: [2]int{13, 33},
+					File: path,
+				},
+			},
+		},
+		{
+			Msg: [2]int{91, 105},
+			Pos: []vulnmap.MarkerPosition{
+				{
+					Rows: [2]int{5, 5},
+					Cols: [2]int{8, 23},
+					File: path,
+				},
+				{
+					Rows: [2]int{9, 9},
+					Cols: [2]int{9, 10},
+					File: path,
+				},
+			},
+		},
+		{
+			Msg: [2]int{108, 130},
+			Pos: []vulnmap.MarkerPosition{
+				{
+					Rows: [2]int{19, 19},
+					Cols: [2]int{19, 20},
+					File: path,
+				},
+			},
+		},
+	}
+
+	return references
+}
+
+func Test_getFormattedMessage(t *testing.T) {
+	testutil.UnitTest(t)
+	p, _, sarifResponse := setupConversionTests(t, true, true)
+	run := sarifResponse.Sarif.Runs[0]
+	result := run.Results[0]
+
+	msg := result.formattedMessage(run.getRule("1"), filepath.Dir(p))
+
+	assert.Contains(t, msg, "Example Commit Fixes")
+	assert.Contains(t, msg, "Data Flow")
+}
+
+func setupConversionTests(t *testing.T,
+	activateVulnmapCodeSecurity bool,
+	activateVulnmapCodeQuality bool,
+) (path string, issues []vulnmap.Issue, response SarifResponse) {
+	testutil.UnitTest(t)
+	c := config.CurrentConfig()
+	c.EnableVulnmapCodeSecurity(activateVulnmapCodeSecurity)
+	c.EnableVulnmapCodeQuality(activateVulnmapCodeQuality)
+	temp := t.TempDir()
+	path = filepath.Join(temp, "File With Spaces.java")
+	err := os.WriteFile(path, []byte(strings.Repeat("aa\n", 1000)), 0660)
+	if err != nil {
+		t.Fatal(err, "couldn't write test file")
+	}
+
+	relPath, err := ToRelativeUnixPath(temp, path)
+	encodedPath := EncodePath(relPath)
+	if err != nil {
+		t.Fatal(err, "couldn't get relative path")
+	}
+
+	var analysisResponse SarifResponse
+	responseJson := getSarifResponseJson(encodedPath)
+	err = json.Unmarshal([]byte(responseJson), &analysisResponse)
+
+	if err != nil {
+		t.Fatal(err, "couldn't unmarshal sarif response")
+	}
+
+	issues, err = analysisResponse.toIssues(temp)
+	assert.Nil(t, err)
+
+	return path, issues, analysisResponse
+}
+
+func TestVulnmapCodeBackendService_analysisRequestBodyIsCorrect(t *testing.T) {
+	testutil.UnitTest(t)
+
+	// prepare
+	config.SetCurrentConfig(config.New())
+	org := "00000000-0000-0000-0000-000000000023"
+	config.CurrentConfig().SetOrganization(org)
+
+	analysisOpts := &AnalysisOptions{
+		bundleHash: "test-hash",
+		shardKey:   "test-key",
+		severity:   0,
+	}
+
+	expectedRequest := AnalysisRequest{
+		Key: AnalysisRequestKey{
+			Type:         "file",
+			Hash:         analysisOpts.bundleHash,
+			LimitToFiles: analysisOpts.limitToFiles,
+			Shard:        analysisOpts.shardKey,
+		},
+		Legacy:          false,
+		AnalysisContext: newCodeRequestContext(),
+	}
+
+	// act
+	bytes, err := (&VulnmapCodeHTTPClient{}).analysisRequestBody(analysisOpts)
+	if err != nil {
+		assert.Fail(t, "Couldn't obtain analysis request body")
+	}
+
+	// assert
+	var actualRequest AnalysisRequest
+	err = json.Unmarshal(bytes, &actualRequest)
+	if err != nil {
+		assert.Fail(t, "Couldn't unmarshal analysis request body")
+	}
+
+	assert.Equal(t, expectedRequest, actualRequest)
+}
+
+func Test_LineChangeChar(t *testing.T) {
+	e := exampleCommit{}
+	assert.Equal(t, " ", e.lineChangeChar("none"))
+	assert.Equal(t, "+", e.lineChangeChar("added"))
+	assert.Equal(t, "-", e.lineChangeChar("removed"))
+}
+
+func Test_rule_cwe(t *testing.T) {
+	t.Run("display CWEs if reported", func(t *testing.T) {
+		cut := rule{Properties: ruleProperties{
+			Cwe: []string{"CWE-23", "CWE-24"},
+		}}
+		assert.Contains(t, cut.cwe(), "https://cwe.mitre.org/data/definitions/23.html")
+		assert.Contains(t, cut.cwe(), "https://cwe.mitre.org/data/definitions/24.html")
+	})
+	t.Run("dont display CWEs if not reported", func(t *testing.T) {
+		cut := rule{Properties: ruleProperties{
+			Cwe: []string{},
+		}}
+		assert.NotContains(t, cut.cwe(), "CWE:")
+	})
+}
+
+func Test_getIssueId(t *testing.T) {
+	id := getIssueKey("java/DontUsePrintStackTrace", "file/path.java", 15, 17, 15, 35)
+	assert.Equal(t, "8423559307c17d15f5617ae2e29dbf02", id)
+}
+
+func Test_getCodeIssueType(t *testing.T) {
+	t.Run("Security issue - single category", func(t *testing.T) {
+		rule := rule{
+			Properties: ruleProperties{
+				Categories: []string{"Security"},
+			},
+		}
+
+		rule.getCodeIssueType()
+		assert.Equal(t, vulnmap.CodeSecurityVulnerability, rule.getCodeIssueType())
+	})
+
+	t.Run("Security issue - multiple categories", func(t *testing.T) {
+		rule := rule{
+			Properties: ruleProperties{
+				Categories: []string{"Security", "Defect"},
+			},
+		}
+
+		rule.getCodeIssueType()
+		assert.Equal(t, vulnmap.CodeSecurityVulnerability, rule.getCodeIssueType())
+	})
+
+	t.Run("Quality - single category", func(t *testing.T) {
+		rule := rule{
+			Properties: ruleProperties{
+				Categories: []string{"Defect"},
+			},
+		}
+
+		rule.getCodeIssueType()
+		assert.Equal(t, vulnmap.CodeQualityIssue, rule.getCodeIssueType())
+	})
+
+	t.Run("Quality - multiple categories", func(t *testing.T) {
+		rule := rule{
+			Properties: ruleProperties{
+				Categories: []string{"Defect", "Info"},
+			},
+		}
+
+		rule.getCodeIssueType()
+		assert.Equal(t, vulnmap.CodeQualityIssue, rule.getCodeIssueType())
+	})
+}
+
+func Test_AutofixResponse_toAutofixSuggestion(t *testing.T) {
+	response := AutofixResponse{
+		Status: "COMPLETE",
+	}
+	fixes := []autofixResponseSingleFix{{
+		Id:    "123e4567-e89b-12d3-a456-426614174000/1",
+		Value: "test1",
+	}, {
+		Id:    "123e4567-e89b-12d3-a456-426614174000/2",
+		Value: "test2",
+	}}
+	response.AutofixSuggestions = append(response.AutofixSuggestions, fixes...)
+	filePath := "path/to/file.js"
+	edits := response.toAutofixSuggestions("/users/git", filePath)
+	editValues := make([]string, 0)
+	for _, edit := range edits {
+		change := edit.AutofixEdit.Changes[ToAbsolutePath("/users/git", filePath)][0]
+		editValues = append(editValues, change.NewText)
+	}
+
+	assert.Contains(t, editValues, "test1", "test2")
+}
+
+func Test_Result_getMarkers_basic(t *testing.T) {
+	r := result{
+		Message: resultMessage{
+			Text:     "",
+			Markdown: "Printing the stack trace of {0}. Production code should not use {1}. {3}",
+			Arguments: []string{"[java.lang.InterruptedException](0)", "[printStackTrace](1)(2)", "",
+				"[This is a test argument](3)"},
+		},
+	}
+
+	marker, err := r.getMarkers("")
+	assert.Nil(t, err)
+	assert.Len(t, marker, 3)
+
+}

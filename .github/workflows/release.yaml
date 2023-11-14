@@ -1,0 +1,155 @@
+# Copyright 2023 Khulnasoft Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: Release
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+
+# Grant an OIDC token which we can exchange for an AWS IAM role
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  release:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare git
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # does an unshallow checkout with tags & branches
+
+
+      # this step can be removed if setup-go will support reading go-version from go.mod
+      - name: Determine Go version
+        run: |
+          sed -En 's/^go[[:space:]]+([[:digit:].]+)$/GO_VERSION=\1/p' go.mod >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Pact CLI tools
+        id: cache-pact
+        uses: actions/cache@v3
+        with:
+          path: ~/pact
+          key: ${{ runner.os }}-pact
+
+      - name: Set up Pact CLI tools
+        shell: bash
+        if: steps.cache-pact.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          curl -fsSL https://raw.githubusercontent.com/pact-foundation/pact-ruby-standalone/master/install.sh | bash
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Lint source code
+        run: |
+          make tools lint
+
+      - name: Set up Vulnmap CLI # Tests need it
+        uses: vulnmap/actions/setup@master
+
+      - name: Run tests
+        env:
+          DEEPROXY_API_URL: ${{secrets.DEEPROXY_API_URL}}
+          VULNMAP_TOKEN: ${{secrets.VULNMAP_TOKEN }}
+        run: |
+          export PATH=$PATH:~/pact/bin
+
+          # this is required to be able to test the clipboard
+          export DISPLAY=:99
+          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+          sudo apt-get install -y xsel xclip wl-clipboard
+
+          make clean test
+
+      - name: Run integration and smoke tests
+        env:
+          DEEPROXY_API_URL: ${{secrets.DEEPROXY_API_URL}}
+          VULNMAP_TOKEN: ${{secrets.VULNMAP_TOKEN }}
+          INTEG_TESTS: 'true'
+          SMOKE_TESTS: 'true'
+        run: |
+          export PATH=$PATH:~/pact/bin
+
+          # this is required to be able to test the clipboard
+          export DISPLAY=:99
+          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+          sudo apt-get install -y xsel xclip wl-clipboard
+
+          make clean test
+
+      - name: Set up Git actions user
+        uses: fregante/setup-git-user@v1
+
+      - name: Create Release Tag
+        run: |
+          VERSION=$(git show -s --format=%cd --date=format:%Y%m%d.%H%M%S)
+          git tag "v$VERSION"
+          git push --tags
+
+      - name: Create License Report
+        id: create_license_report
+        run: |
+          go install github.com/google/go-licenses@latest
+          LICENSES=$(go-licenses report . --ignore github.com/khulnasoft-lab/vulnmap-ls)
+          echo 'LICENSES<<EOF' >> $GITHUB_OUTPUT
+          echo $LICENSES >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+          echo $LICENSES
+
+      - name: Build binaries and github release
+        uses: goreleaser/goreleaser-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
+          LICENSES: ${{ steps.create_license_report.outputs.LICENSES }}
+        with:
+          args: release --clean
+
+      - name: Output compiled licenses
+        run: |
+          chmod +x build/vulnmap-ls_linux_amd64_v1/vulnmap-ls
+          build/vulnmap-ls_linux_amd64_v1/vulnmap-ls -licenses
+
+      - name: Login to AWS
+        run: |
+          .github/setup_aws_credentials.py \
+            --role-arn "arn:aws:iam::198361731867:role/Vulnmap-Assets-WriteOnly" \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Upload binaries to static.vulnmap.khulnasoft.com
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
+        run: |
+          .github/upload-to-s3.sh

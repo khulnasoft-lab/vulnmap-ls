@@ -1,0 +1,10 @@
+{
+  "go.buildOnSave": "workspace",
+  "go.lintTool": "golangci-lint",
+  "go.formatTool": "goimports",
+  "go.formatFlags": ["-w", "-s"],
+  "gopls": {
+    "formatting.local": "github.com/khulnasoft-lab/vulnmap-ls"
+  },
+  "go.toolsManagement.autoUpdate": true,
+}

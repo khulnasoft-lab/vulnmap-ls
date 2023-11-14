@@ -1,0 +1,242 @@
+/*
+ * © 2023 Khulnasoft Limited All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package vulnmap
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/khulnasoft-lab/vulnmap-ls/application/config"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/ide/initialize"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/ide/notification"
+	"github.com/khulnasoft-lab/vulnmap-ls/domain/observability/performance"
+	ux2 "github.com/khulnasoft-lab/vulnmap-ls/domain/observability/ux"
+	"github.com/khulnasoft-lab/vulnmap-ls/infrastructure/vulnmap_api"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/lsp"
+	"github.com/khulnasoft-lab/vulnmap-ls/internal/product"
+)
+
+var (
+	_ Scanner             = (*DelegatingConcurrentScanner)(nil)
+	_ InlineValueProvider = (*DelegatingConcurrentScanner)(nil)
+	_ PackageScanner      = (*DelegatingConcurrentScanner)(nil)
+)
+
+type Scanner interface {
+	// Scan scans a workspace folder or file for issues, given its path. 'folderPath' provides a path to a workspace folder, if a file needs to be scanned.
+	Scan(
+		ctx context.Context,
+		path string,
+		processResults ScanResultProcessor,
+		folderPath string,
+	)
+	Init() error
+}
+
+type PackageScanner interface {
+	ScanPackages(ctx context.Context, config *config.Config, path string, content string)
+}
+
+// DelegatingConcurrentScanner is a simple Scanner Implementation that delegates on other scanners asynchronously
+type DelegatingConcurrentScanner struct {
+	scanners      []ProductScanner
+	initializer   initialize.Initializer
+	instrumentor  performance.Instrumentor
+	analytics     ux2.Analytics
+	scanNotifier  ScanNotifier
+	vulnmapApiClient vulnmap_api.VulnmapApiClient
+	authService   AuthenticationService
+	notifier      notification.Notifier
+}
+
+func (sc *DelegatingConcurrentScanner) ScanPackages(ctx context.Context, config *config.Config, path string, content string) {
+	for _, scanner := range sc.scanners {
+		if s, ok := scanner.(PackageScanner); ok {
+			s.ScanPackages(ctx, config, path, content)
+		}
+	}
+}
+
+func NewDelegatingScanner(
+	initializer initialize.Initializer,
+	instrumentor performance.Instrumentor,
+	analytics ux2.Analytics,
+	scanNotifier ScanNotifier,
+	vulnmapApiClient vulnmap_api.VulnmapApiClient,
+	authService AuthenticationService,
+	notifier notification.Notifier,
+	scanners ...ProductScanner,
+) Scanner {
+	return &DelegatingConcurrentScanner{
+		instrumentor:  instrumentor,
+		analytics:     analytics,
+		initializer:   initializer,
+		scanNotifier:  scanNotifier,
+		vulnmapApiClient: vulnmapApiClient,
+		scanners:      scanners,
+		authService:   authService,
+		notifier:      notifier,
+	}
+}
+
+func (sc *DelegatingConcurrentScanner) ClearInlineValues(path string) {
+	for _, scanner := range sc.scanners {
+		if s, ok := scanner.(InlineValueProvider); ok {
+			s.ClearInlineValues(path)
+		}
+	}
+}
+
+func (sc *DelegatingConcurrentScanner) GetInlineValues(path string, myRange Range) (values []InlineValue, err error) {
+	for _, scanner := range sc.scanners {
+		if s, ok := scanner.(InlineValueProvider); ok {
+			inlineValues, err := s.GetInlineValues(path, myRange)
+			if err != nil {
+				log.Warn().Str("method", "DelegatingConcurrentScanner.getInlineValues").Err(err).
+					Msgf("couldn't get inline values from scanner %s", scanner.Product())
+				continue
+			}
+			values = append(values, inlineValues...)
+		}
+	}
+	return values, err
+}
+
+func (sc *DelegatingConcurrentScanner) Init() error {
+	err := sc.initializer.Init()
+	if err != nil {
+		log.Error().Err(err).Msg("Scanner initialization error")
+		return err
+	}
+	return nil
+}
+
+func (sc *DelegatingConcurrentScanner) Scan(
+	ctx context.Context,
+	path string,
+	processResults ScanResultProcessor,
+	folderPath string,
+) {
+	method := "ide.workspace.folder.DelegatingConcurrentScanner.ScanFile"
+	c := config.CurrentConfig()
+
+	authenticated, err := sc.authService.IsAuthenticated()
+	if err != nil {
+		log.Error().Err(err).Msg("Error checking authentication status")
+	}
+
+	if !authenticated {
+		return
+	}
+
+	tokenChangeChannel := c.TokenChangesChannel()
+	done := make(chan bool)
+	defer close(done)
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	defer cancelFunc()
+
+	go func() { // This goroutine will listen to token changes and cancel the scans using a context
+		select {
+		case <-tokenChangeChannel:
+			log.Info().Msg("Token was changed, cancelling scan")
+			cancelFunc()
+			return
+		case <-done: // The done channel prevents the goroutine from leaking after the scan is finished
+			return
+		}
+	}()
+
+	if ctx.Err() != nil {
+		log.Info().Msg("Scan was cancelled")
+		return
+	}
+
+	analysisTypes := getEnabledAnalysisTypes(sc.scanners)
+	if len(analysisTypes) > 0 {
+		sc.analytics.AnalysisIsTriggered(
+			ux2.AnalysisIsTriggeredProperties{
+				AnalysisType:    analysisTypes,
+				TriggeredByUser: false,
+			},
+		)
+		sc.scanNotifier.SendInProgress(folderPath)
+	}
+
+	waitGroup := &sync.WaitGroup{}
+	for _, scanner := range sc.scanners {
+		if scanner.IsEnabled() {
+			waitGroup.Add(1)
+			go func(s ProductScanner) {
+				defer waitGroup.Done()
+				span := sc.instrumentor.NewTransaction(context.WithValue(ctx, s.Product(), s), string(s.Product()), method)
+				defer sc.instrumentor.Finish(span)
+				log.Info().Msgf("Scanning %s with %T: STARTED", path, s)
+				// TODO change interface of scan to pass a func (processResults), which would enable products to stream
+
+				scanSpan := sc.instrumentor.StartSpan(span.Context(), "scan")
+				foundIssues, err := s.Scan(scanSpan.Context(), path, folderPath)
+				sc.instrumentor.Finish(scanSpan)
+
+				// now process
+				data := ScanData{
+					Product:           s.Product(),
+					Issues:            foundIssues,
+					Err:               err,
+					DurationMs:        scanSpan.GetDurationMs(),
+					TimestampFinished: time.Now().UTC(),
+				}
+				processResults(data)
+				log.Info().Msgf("Scanning %s with %T: COMPLETE found %v issues", path, s, len(foundIssues))
+			}(scanner)
+		} else {
+			log.Debug().Msgf("Skipping scan with %T because it is not enabled", scanner)
+		}
+	}
+	log.Debug().Msgf("All product scanners started for %s", path)
+	waitGroup.Wait()
+	log.Debug().Msgf("All product scanners finished for %s", path)
+	sc.notifier.Send(lsp.InlineValueRefresh{})
+	sc.notifier.Send(lsp.CodeLensRefresh{})
+	// TODO: handle learn actions centrally instead of in each scanner
+}
+
+func getEnabledAnalysisTypes(productScanners []ProductScanner) (analysisTypes []ux2.AnalysisType) {
+	for _, ps := range productScanners {
+		if !ps.IsEnabled() {
+			continue
+		}
+		if ps.Product() == product.ProductInfrastructureAsCode {
+			analysisTypes = append(analysisTypes, ux2.InfrastructureAsCode)
+		}
+		if ps.Product() == product.ProductOpenSource {
+			analysisTypes = append(analysisTypes, ux2.OpenSource)
+		}
+		if ps.Product() == product.ProductCode {
+			if config.CurrentConfig().IsVulnmapCodeQualityEnabled() || config.CurrentConfig().IsVulnmapCodeEnabled() {
+				analysisTypes = append(analysisTypes, ux2.CodeQuality)
+			}
+			if config.CurrentConfig().IsVulnmapCodeSecurityEnabled() || config.CurrentConfig().IsVulnmapCodeEnabled() {
+				analysisTypes = append(analysisTypes, ux2.CodeSecurity)
+			}
+		}
+	}
+	return analysisTypes
+}
