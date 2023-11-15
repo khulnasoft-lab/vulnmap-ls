@@ -8,7 +8,7 @@ require (
 	github.com/creachadair/jrpc2 v1.1.1
 	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/erni27/imcache v1.1.0
-	github.com/getsentry/sentry-go v0.23.0
+	github.com/getsentry/sentry-go v0.25.0
 	github.com/golang/mock v1.6.0
 	github.com/gomarkdown/markdown v0.0.0-20230922112808-5421fefb8386
 	github.com/google/uuid v1.4.0
