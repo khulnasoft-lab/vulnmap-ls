@@ -7,7 +7,7 @@ require (
 	github.com/Unknwon/i18n v0.0.0-20171114194641-b64d33658966 // indirect
 	github.com/bradfitz/gomemcache v0.0.0-20190329173943-551aad21a668 // indirect
 	github.com/fatih/color v1.7.0 // indirect
-	github.com/gin-gonic/gin v1.4.0
+	github.com/gin-gonic/gin v1.10.0
 	github.com/go-macaron/cache v0.0.0-20151013081102-561735312776 // indirect
 	github.com/go-macaron/inject v0.0.0-20160627170012-d8a0b8677191 // indirect
 	github.com/go-macaron/session v0.0.0-20190131233854-0a0a789bf193 // indirect
