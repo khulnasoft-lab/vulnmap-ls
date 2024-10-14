@@ -8,10 +8,10 @@ require (
 	github.com/creachadair/jrpc2 v1.1.1
 	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/erni27/imcache v1.1.0
-	github.com/getsentry/sentry-go v0.23.0
+	github.com/getsentry/sentry-go v0.29.1
 	github.com/golang/mock v1.6.0
 	github.com/gomarkdown/markdown v0.0.0-20230922112808-5421fefb8386
-	github.com/google/uuid v1.4.0
+	github.com/google/uuid v1.6.0
 	github.com/khulnasoft-lab/go-application-framework v0.0.0-20231114160628-a5f9fc7a9c25
 	github.com/pact-foundation/pact-go v1.7.0
 	github.com/pingcap/errors v0.11.4
@@ -28,7 +28,7 @@ require (
 	github.com/xtgo/uuid v0.0.0-20140804021211-a0b114877d4c
 	go.lsp.dev/uri v0.3.0
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
-	golang.org/x/net v0.18.0
+	golang.org/x/net v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -51,7 +51,7 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
-	golang.org/x/crypto v0.15.0 // indirect
+	golang.org/x/crypto v0.21.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
 
@@ -70,7 +70,7 @@ require (
 	github.com/spf13/viper v1.17.0 // indirect
 	golang.org/x/oauth2 v0.14.0
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.31.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
 
@@ -90,7 +90,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.3 // indirect
 	golang.org/x/sync v0.3.0 // indirect
-	golang.org/x/sys v0.14.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
 
