@@ -3,7 +3,7 @@ module github.com/khulnasoft-lab/vulnmap-ls
 go 1.21.4
 
 require (
-	github.com/adrg/xdg v0.4.0
+	github.com/adrg/xdg v0.5.3
 	github.com/atotto/clipboard v0.1.4
 	github.com/creachadair/jrpc2 v1.1.1
 	github.com/denisbrodbeck/machineid v1.0.1
@@ -23,7 +23,7 @@ require (
 	github.com/segmentio/analytics-go v3.1.0+incompatible
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/sourcegraph/go-lsp v0.0.0-20240223163137-f80c5dd31dfd
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.9.0
 	github.com/subosito/gotenv v1.6.0
 	github.com/xtgo/uuid v0.0.0-20140804021211-a0b114877d4c
 	go.lsp.dev/uri v0.3.0
@@ -85,12 +85,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/segmentio/backo-go v1.0.1 // indirect
-	github.com/stretchr/objx v0.5.1 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.3 // indirect
 	golang.org/x/sync v0.3.0 // indirect
-	golang.org/x/sys v0.14.0 // indirect
+	golang.org/x/sys v0.26.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
 
